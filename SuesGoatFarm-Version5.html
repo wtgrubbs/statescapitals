@@ -1,0 +1,1207 @@
+<!doctype html>
+<html lang="en" class="h-full">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sue's Goat Farm</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="/_sdk/element_sdk.js"></script>
+  <style>
+html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+@font-face { font-family: 'PixelFont'; src: local('Courier New'); }
+* { image-rendering: pixelated; font-family: 'Courier New', monospace; }
+canvas { display: block; }
+#game-wrapper { width: 100%; height: 100%; position: relative; background: #1a1a2e; }
+#gameCanvas { width: 100%; height: 100%; }
+.pixel-border { border: 3px solid #5a3a1a; box-shadow: inset 0 0 0 1px #8b6914, 0 0 0 1px #3a2a0a; }
+.hud-box { background: rgba(30,20,10,0.85); border: 2px solid #8b6914; border-radius: 4px; padding: 4px 10px; color: #f5deb3; font-size: 13px; letter-spacing: 1px; }
+#title-screen, #game-over-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; }
+#title-screen { background: linear-gradient(180deg, #87CEEB 0%, #98d977 60%, #6b8e3a 100%); }
+#game-over-screen { background: rgba(10,5,20,0.92); }
+.title-text { font-size: 48px; color: #5a3a1a; text-shadow: 2px 2px 0 #f5deb3, -1px -1px 0 #3a2a0a; letter-spacing: 3px; }
+.start-btn { margin-top: 30px; padding: 12px 40px; background: #8b6914; color: #fff; border: 3px solid #5a3a1a; font-size: 20px; cursor: pointer; letter-spacing: 2px; }
+.start-btn:hover { background: #a07a1a; }
+.subtitle { color: #3a5a1a; font-size: 16px; margin-top: 10px; }
+</style>
+  <style>body { box-sizing: border-box; }</style>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.263.0/dist/umd/lucide.min.js" type="text/javascript"></script>
+  <script src="/_sdk/data_sdk.js" type="text/javascript"></script>
+ </head>
+ <body>
+  <div id="game-wrapper">
+   <canvas id="gameCanvas"></canvas>
+   <div id="hud" style="position:absolute;top:8px;left:8px;right:8px;display:none;pointer-events:none;">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+     <div class="hud-box" id="hud-time">
+      🕐 8:00 AM
+     </div>
+     <div class="hud-box" id="hud-flowers">
+      🌸 Flowers: 0
+     </div>
+     <div class="hud-box" id="hud-goats">
+      🐐 Following: 0
+     </div>
+     <div class="hud-box" id="hud-score">
+      ⭐ Score: 0
+     </div>
+     <div class="hud-box" id="hud-day">
+      Day 1
+     </div>
+    </div>
+    <div id="hud-message" style="text-align:center;margin-top:6px;color:#ffe4a0;font-size:14px;text-shadow:1px 1px 2px #000;opacity:0;transition:opacity 0.5s;"></div>
+   </div>
+   <div id="title-screen">
+    <div class="title-text" id="main-title">
+     Sue's Goat Farm
+    </div>
+    <div class="subtitle">
+     Find goats, feed them flowers, bring them home!
+    </div>
+    <div style="margin-top:20px;color:#5a3a1a;font-size:13px;text-align:center;max-width:400px;line-height:1.6;">
+     Use <b>Arrow Keys</b> or <b>WASD</b> to move<br>
+      Press <b>Space</b> or <b>E</b> near flowers to pick them<br>
+      Press <b>Space</b> or <b>E</b> near goats to offer a flower<br>
+      Return to the barn before sundown!
+    </div><button class="start-btn" id="startBtn" onclick="resetScores(); startGame()">Start Day</button>
+   </div>
+   <div id="game-over-screen" style="display:none;">
+    <div style="font-size:36px;color:#f5deb3;text-shadow:2px 2px 0 #5a3a1a;" id="go-title">
+     Day Complete!
+    </div>
+    <div style="color:#ffe4a0;font-size:18px;margin-top:16px;" id="go-message"></div>
+    <div style="color:#8b6914;font-size:28px;margin-top:12px;" id="go-score"></div>
+    <div style="color:#a0d0a0;font-size:16px;margin-top:8px;" id="go-total"></div><button class="start-btn" onclick="startGame()">Next Day</button>
+   </div>
+  </div>
+  <script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const TILE = 40;
+const DAY_START = 8*60, DAY_END = 19*60;
+const DAY_DURATION_SEC = 300;
+
+let W, H, COLS, ROWS;
+let gameState = 'title';
+let world, player, goats, flowers, decorations, particles;
+let gameTime, realStartTime, dayNum = 0, totalScore = 0;
+let keys = {};
+let camera = {x:0, y:0};
+let messageTimer = 0;
+let barnX, barnY;
+let audioCtx, masterGain;
+let ambientInterval, musicInterval;
+let worldW, worldH;
+let todayScore = 0;
+
+function resizeCanvas() {
+  canvas.width = canvas.parentElement.clientWidth;
+  canvas.height = canvas.parentElement.clientHeight;
+  W = canvas.width; H = canvas.height;
+  COLS = Math.ceil(W/TILE)+2; ROWS = Math.ceil(H/TILE)+2;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// Audio
+function initAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.3;
+  masterGain.connect(audioCtx.destination);
+}
+
+function playTone(freq, dur, type='square', vol=0.15, delay=0) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type;
+  o.frequency.value = freq;
+  g.gain.value = 0;
+  const t = audioCtx.currentTime + delay;
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(masterGain);
+  o.start(t); o.stop(t + dur);
+}
+
+function playPickup() { playTone(520,0.08,'square',0.12); playTone(700,0.1,'square',0.1,0.08); }
+function playBleat(baby=false) {
+  if (baby) {
+    // Baby goat: higher, more melodic bleating
+    playTone(620, 0.12, 'sawtooth', 0.14);
+    playTone(750, 0.1, 'sawtooth', 0.12, 0.12);
+    playTone(680, 0.08, 'sawtooth', 0.1, 0.24);
+    // Extra squeak for cuteness
+    playTone(920, 0.06, 'sine', 0.08, 0.35);
+  } else {
+    // Adult goat: deeper, more resonant bleating with character
+    playTone(320, 0.25, 'sawtooth', 0.15);
+    playTone(400, 0.2, 'sawtooth', 0.12, 0.1);
+    playTone(280, 0.18, 'sawtooth', 0.11, 0.32);
+    // Add a growl-like element
+    playTone(500, 0.15, 'triangle', 0.08, 0.08);
+  }
+}
+function playFeed() { playTone(440,0.06,'square',0.1); playTone(550,0.08,'square',0.1,0.06); playTone(660,0.1,'square',0.1,0.12); }
+function playBarnSound() { for(let i=0;i<5;i++) playTone(300+i*80,0.15,'triangle',0.1,i*0.12); }
+
+const melodyNotes = [262,294,330,349,392,349,330,294,262,330,392,440,392,330,294,262];
+let melodyIdx = 0;
+function playMelodyNote() {
+  if (gameState !== 'playing') return;
+  playTone(melodyNotes[melodyIdx], 0.4, 'triangle', 0.06);
+  playTone(melodyNotes[melodyIdx]*0.5, 0.5, 'sine', 0.04);
+  melodyIdx = (melodyIdx + 1) % melodyNotes.length;
+}
+
+function startAmbient() {
+  stopAmbient();
+  musicInterval = setInterval(playMelodyNote, 1800);
+  ambientInterval = setInterval(() => {
+    if (gameState !== 'playing') return;
+    if (Math.random()<0.3) playTone(800+Math.random()*600, 0.05+Math.random()*0.1, 'sine', 0.02);
+  }, 3000);
+}
+function stopAmbient() { clearInterval(musicInterval); clearInterval(ambientInterval); }
+
+// World gen
+const T_GRASS=0, T_TALL_GRASS=1, T_TREE=2, T_WATER=3, T_FENCE=4, T_PATH=5, T_DENSE=6,
+      T_HILL=7, T_BRIDGE=8, T_HEDGE=9, T_BARN=10, T_BARN_DOOR=11;
+
+function noise2d(x,y,seed) {
+  let n = Math.sin(x*127.1+y*311.7+seed*1731.5)*43758.5453;
+  return n - Math.floor(n);
+}
+
+function smoothNoise(x,y,seed,scale) {
+  const sx=x/scale, sy=y/scale;
+  const ix=Math.floor(sx), iy=Math.floor(sy);
+  const fx=sx-ix, fy=sy-iy;
+  const a=noise2d(ix,iy,seed), b=noise2d(ix+1,iy,seed);
+  const c=noise2d(ix,iy+1,seed), d=noise2d(ix+1,iy+1,seed);
+  const u=fx*fx*(3-2*fx), v=fy*fy*(3-2*fy);
+  return a*(1-u)*(1-v)+b*u*(1-v)+c*(1-u)*v+d*u*v;
+}
+
+function generateWorld() {
+  worldW = 100; worldH = 100;
+  const seed = Math.random()*10000;
+  world = [];
+  for (let y=0; y<worldH; y++) {
+    world[y] = [];
+    for (let x=0; x<worldW; x++) {
+      const e = smoothNoise(x,y,seed,12) * 0.5 + smoothNoise(x,y,seed+100,6) * 0.3 + smoothNoise(x,y,seed+200,3) * 0.2;
+      const m = smoothNoise(x,y,seed+300,8);
+      const f = smoothNoise(x,y,seed+400,15);
+      if (e < 0.28) world[y][x] = T_WATER;
+      else if (e > 0.72) world[y][x] = T_HILL;
+      else if (f > 0.7 && e > 0.35 && e < 0.65) world[y][x] = T_DENSE;
+      else if (m > 0.65 && e > 0.32) world[y][x] = T_TREE;
+      else if (Math.random() < 0.15) world[y][x] = T_TALL_GRASS;
+      else world[y][x] = T_GRASS;
+    }
+  }
+
+  // Barn location
+  barnX = Math.floor(worldW/2); barnY = Math.floor(worldH/2);
+
+  // Clear large safe zone around barn (20x20) - allows more room for movement
+  for (let dy=-10;dy<=10;dy++) {
+    for (let dx=-10;dx<=10;dx++) {
+      const x = barnX+dx, y = barnY+dy;
+      if (x>=0&&x<worldW&&y>=0&&y<worldH) {
+        const t = world[y][x];
+        if (t!==T_PATH && (t===T_TREE || t===T_WATER || t===T_DENSE || t===T_HEDGE || t===T_HILL)) {
+          world[y][x] = Math.random()<0.2 ? T_TALL_GRASS : T_GRASS;
+        }
+      }
+    }
+  }
+
+  // Paths from barn extending outward - wider paths for better navigation
+  for (let i=-30;i<31;i++) { setSafe(barnX+i, barnY+5, T_PATH); setSafe(barnX+5, barnY+i, T_PATH); }
+  for (let i=-26;i<27;i++) { setSafe(barnX+i, barnY+4, T_PATH); setSafe(barnX+4, barnY+i, T_PATH); }
+  for (let i=-22;i<23;i++) { setSafe(barnX+i, barnY+3, T_PATH); setSafe(barnX+3, barnY+i, T_PATH); }
+  
+  // Extended paths in 4 directions with better navigation
+  for (let d=0;d<4;d++) {
+    let px=barnX, py=barnY;
+    const ang = d*Math.PI/2 + (Math.random()-0.5)*0.3;
+    for (let s=0; s<50; s++) {
+      px += Math.round(Math.cos(ang) + (Math.random()-0.5)*0.3);
+      py += Math.round(Math.sin(ang) + (Math.random()-0.5)*0.3);
+      if (px>=0&&px<worldW&&py>=0&&py<worldH) {
+        if (world[py][px]===T_WATER) { world[py][px]=T_BRIDGE; }
+        else if (world[py][px]!==T_BARN && world[py][px]!==T_BARN_DOOR) {
+          world[py][px]=T_PATH;
+        }
+        // Add adjacent grass to path for better accessibility
+        if (Math.random()<0.3 && px>0) { const t=world[py][px-1]; if(t===T_TREE||t===T_DENSE)world[py][px-1]=T_GRASS; }
+        if (Math.random()<0.3 && py>0) { const t=world[py-1][px]; if(t===T_TREE||t===T_DENSE)world[py-1][px]=T_GRASS; }
+      }
+    }
+  }
+
+  // Fences & hedges near barn - moved further out
+  for (let i=-4;i<=4;i++) {
+    setSafe(barnX+i, barnY-8, T_FENCE); setSafe(barnX+i, barnY+10, T_FENCE);
+    setSafe(barnX-8, barnY+i, T_FENCE); setSafe(barnX+8, barnY+i, T_FENCE);
+  }
+  
+  // Random hedgerows - avoid close to barn, create corridors
+  for (let h=0;h<10;h++) {
+    let hx = 25+Math.floor(Math.random()*(worldW-50));
+    let hy = 25+Math.floor(Math.random()*(worldH-50));
+    const horiz = Math.random()>0.5;
+    const len = 4+Math.floor(Math.random()*6);
+    for (let s=0;s<len;s++) {
+      if (hx>=0&&hx<worldW&&hy>=0&&hy<worldH && world[hy][hx]===T_GRASS) world[hy][hx]=T_HEDGE;
+      if (horiz) hx++; else hy++;
+    }
+  }
+
+  // Streams with bridges - avoid close to barn, create natural features
+  for (let s=0;s<3;s++) {
+    let sx = Math.random()>0.5 ? 0 : Math.floor(Math.random()*worldW);
+    let sy = sx===0 ? Math.floor(Math.random()*worldH) : 0;
+    for (let i=0;i<60;i++) {
+      sx += Math.round(Math.random()*2); sy += Math.round(Math.random()*2);
+      if (sx>=0&&sx<worldW&&sy>=0&&sy<worldH) {
+        if (Math.abs(sx-barnX)<12 && Math.abs(sy-barnY)<12) continue;
+        world[sy][sx] = T_WATER;
+        if (sx+1<worldW) world[sy][sx+1] = T_WATER;
+      }
+    }
+  }
+
+  // Barn
+  for (let dy=-2;dy<=1;dy++) for (let dx=-2;dx<=2;dx++) setSafe(barnX+dx, barnY+dy, T_BARN);
+  setSafe(barnX, barnY+2, T_BARN_DOOR);
+  setSafe(barnX, barnY+1, T_PATH);
+}
+
+function setSafe(x,y,t) { if(x>=0&&x<worldW&&y>=0&&y<worldH) world[y][x]=t; }
+function getTile(x,y) { if(x<0||x>=worldW||y<0||y>=worldH) return T_DENSE; return world[y][x]; }
+function isSolid(tx,ty) { const t=getTile(tx,ty); return t===T_TREE||t===T_WATER||t===T_DENSE||t===T_FENCE||t===T_HEDGE||t===T_BARN||t===T_HILL; }
+
+// Flowers & Goats
+function spawnFlowers() {
+  flowers = [];
+  const types = ['rose','sunflower','marigold'];
+  for (let i=0;i<60;i++) {
+    let fx,fy,tries=0;
+    do { fx=Math.floor(Math.random()*worldW); fy=Math.floor(Math.random()*worldH); tries++; }
+    while (tries<50 && (isSolid(fx,fy) || (Math.abs(fx-barnX)<5&&Math.abs(fy-barnY)<5)));
+    if (tries<50) flowers.push({x:fx,y:fy,type:types[Math.floor(Math.random()*3)],collected:false});
+  }
+}
+
+function spawnGoats() {
+  goats = [];
+  for (let i=0;i<28;i++) {
+    let gx,gy,tries=0;
+    do { gx=Math.floor(Math.random()*worldW); gy=Math.floor(Math.random()*worldH); tries++; }
+    while (tries<50 && (isSolid(gx,gy) || Math.abs(gx-barnX)<12 || Math.abs(gy-barnY)<12));
+    if (tries>=50) continue;
+    const isMother = Math.random()<0.25;
+    goats.push({x:gx*TILE+TILE/2, y:gy*TILE+TILE/2, following:false, isMother, isBaby:false, wanderAngle:Math.random()*Math.PI*2, wanderTimer:0, barnCollected:false});
+    if (isMother) {
+      goats.push({x:gx*TILE+TILE/2+20, y:gy*TILE+TILE/2+16, following:false, isMother:false, isBaby:true, parentIdx:goats.length-1, wanderAngle:Math.random()*Math.PI*2, wanderTimer:0, barnCollected:false});
+      goats.push({x:gx*TILE+TILE/2-20, y:gy*TILE+TILE/2+16, following:false, isMother:false, isBaby:true, parentIdx:goats.length-2, wanderAngle:Math.random()*Math.PI*2, wanderTimer:0, barnCollected:false});
+    }
+  }
+}
+
+function spawnDecorations() {
+  decorations = [];
+  for (let i=0;i<40;i++) {
+    const dx=Math.random()*worldW*TILE, dy=Math.random()*worldH*TILE;
+    const type = Math.random()>0.5 ? 'butterfly' : 'bird';
+    decorations.push({x:dx,y:dy,type,vx:(Math.random()-0.5)*0.5,vy:(Math.random()-0.5)*0.3,timer:Math.random()*200,baseY:dy});
+  }
+  particles = [];
+}
+
+// Player
+function initPlayer() {
+  player = {
+    x: barnX*TILE+TILE/2, y: (barnY+3)*TILE,
+    dir: 0, frame: 0, frameTimer: 0,
+    flowerCount: 0, speed: 1.8,
+    followingGoats: 0
+  };
+}
+
+// Game loop
+function startGame() {
+  initAudio();
+  document.getElementById('title-screen').style.display = 'none';
+  document.getElementById('game-over-screen').style.display = 'none';
+  document.getElementById('hud').style.display = 'block';
+  dayNum++;
+  todayScore = 0;
+  generateWorld();
+  spawnFlowers();
+  spawnGoats();
+  spawnDecorations();
+  initPlayer();
+  gameTime = DAY_START;
+  realStartTime = performance.now();
+  gameState = 'playing';
+  startAmbient();
+}
+
+function getGameMinutes() {
+  const elapsed = (performance.now() - realStartTime) / 1000;
+  return DAY_START + (elapsed / DAY_DURATION_SEC) * (DAY_END - DAY_START);
+}
+
+function formatTime(mins) {
+  const h = Math.floor(mins/60), m = Math.floor(mins%60);
+  const ampm = h>=12?'PM':'AM';
+  const h12 = h>12?h-12:(h===0?12:h);
+  return `${h12}:${m<10?'0'+m:m} ${ampm}`;
+}
+
+function showMessage(txt) {
+  const el = document.getElementById('hud-message');
+  el.textContent = txt; el.style.opacity = 1;
+  messageTimer = 180;
+}
+
+function getSkyColor(mins) {
+  const t = (mins-DAY_START)/(DAY_END-DAY_START);
+  if (t<0.1) return lerpColor('#ffb347','#87CEEB',t/0.1);
+  if (t>0.85) return lerpColor('#87CEEB','#ff6b35',Math.min(1,(t-0.85)/0.15));
+  return '#87CEEB';
+}
+
+function lerpColor(a,b,t) {
+  const ar=parseInt(a.slice(1,3),16),ag=parseInt(a.slice(3,5),16),ab=parseInt(a.slice(5,7),16);
+  const br=parseInt(b.slice(1,3),16),bg=parseInt(b.slice(3,5),16),bb=parseInt(b.slice(5,7),16);
+  const r=Math.round(ar+(br-ar)*t),g=Math.round(ag+(bg-ag)*t),bl=Math.round(ab+(bb-ab)*t);
+  return `rgb(${r},${g},${bl})`;
+}
+
+function getDarken(mins) {
+  const t = (mins-DAY_START)/(DAY_END-DAY_START);
+  if (t > 0.8) return Math.min(0.6, (t-0.8)/0.2 * 0.6);
+  return 0;
+}
+
+// Input
+document.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; if(e.key===' ')e.preventDefault(); });
+document.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+// Mobile controls
+let touchDir = {x:0,y:0};
+let touchAction = false;
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  const cx = W/2, cy = H/2;
+  const dx = t.clientX-cx, dy = t.clientY-cy;
+  if (Math.abs(dx)<40 && Math.abs(dy)<40) { touchAction=true; return; }
+  const a = Math.atan2(dy,dx);
+  touchDir = {x:Math.cos(a),y:Math.sin(a)};
+}, {passive:false});
+canvas.addEventListener('touchend', e => { touchDir={x:0,y:0}; touchAction=false; });
+
+// Update
+function update() {
+  if (gameState !== 'playing') return;
+  gameTime = getGameMinutes();
+
+  if (gameTime >= DAY_END) { endDay(false); return; }
+
+  // Player movement
+  let dx=0, dy=0;
+  if (keys['arrowleft']||keys['a']) dx=-1;
+  if (keys['arrowright']||keys['d']) dx=1;
+  if (keys['arrowup']||keys['w']) dy=-1;
+  if (keys['arrowdown']||keys['s']) dy=1;
+  dx += touchDir.x; dy += touchDir.y;
+  if (dx||dy) {
+    const len = Math.sqrt(dx*dx+dy*dy);
+    dx/=len; dy/=len;
+    const nx = player.x+dx*player.speed, ny = player.y+dy*player.speed;
+    const ntx = Math.floor(nx/TILE), nty = Math.floor(ny/TILE);
+    const ctx_ = Math.floor(player.x/TILE), cty = Math.floor(player.y/TILE);
+    if (!isSolid(ntx, cty)) player.x = nx;
+    if (!isSolid(ctx_, nty)) player.y = ny;
+    player.x = Math.max(4, Math.min(worldW*TILE-4, player.x));
+    player.y = Math.max(4, Math.min(worldH*TILE-4, player.y));
+    player.dir = dx<0?1:dx>0?0:player.dir;
+    player.frameTimer++; if (player.frameTimer>8){player.frame=(player.frame+1)%4;player.frameTimer=0;}
+  }
+
+  // Interact
+  const interact = keys[' '] || keys['e'] || touchAction;
+  if (interact) {
+    keys[' ']=false; keys['e']=false; touchAction=false;
+    // Flowers
+    for (const f of flowers) {
+      if (!f.collected && Math.abs(player.x-f.x*TILE-TILE/2)<TILE*1.2 && Math.abs(player.y-f.y*TILE-TILE/2)<TILE*1.2) {
+        f.collected = true; player.flowerCount++;
+        playPickup();
+        showMessage(`Picked a ${f.type}! 🌸 x${player.flowerCount}`);
+        break;
+      }
+    }
+    // Goats
+    for (const g of goats) {
+      if (!g.following && !g.isBaby && Math.abs(player.x-g.x)<TILE*1.5 && Math.abs(player.y-g.y)<TILE*1.5) {
+        if (player.flowerCount > 0) {
+          player.flowerCount--;
+          g.following = true;
+          playFeed();
+          if (g.isMother) {
+            for (const bg of goats) { if (bg.isBaby && bg.parentIdx===goats.indexOf(g)) { bg.following=true; } }
+            showMessage('Mother goat + 2 babies are following you! 🐐🐐🐐');
+          } else {
+            showMessage('A goat is now following you! 🐐');
+          }
+        } else {
+          showMessage('You need flowers to feed the goat!');
+        }
+        break;
+      }
+    }
+    // Barn
+    const bDoorX = barnX*TILE+TILE/2, bDoorY = (barnY+2)*TILE+TILE/2;
+    if (Math.abs(player.x-bDoorX)<TILE*2 && Math.abs(player.y-bDoorY)<TILE*2) {
+      const following = goats.filter(g=>g.following && !g.barnCollected);
+      if (following.length>0) endDay(true);
+    }
+  }
+
+  // Check barn proximity for auto-collect
+  const bDoorX = barnX*TILE+TILE/2, bDoorY = (barnY+2)*TILE+TILE/2;
+  for (const g of goats) {
+    if (g.following && !g.barnCollected && Math.abs(g.x-bDoorX)<TILE*2 && Math.abs(g.y-bDoorY)<TILE*2) {
+      g.barnCollected = true;
+    }
+  }
+
+  // Goat AI
+  for (const g of goats) {
+    if (g.barnCollected) continue;
+    if (g.following) {
+      let target;
+      if (g.isBaby) {
+        const parent = goats[g.parentIdx];
+        // Babies stay near parent
+        target = {x:parent.x+(g.parentIdx%2?10:-10), y:parent.y+12};
+      } else {
+        // Find position in the following line
+        const followingIdx = goats.filter(go => go.following && go===g || goats.indexOf(go) < goats.indexOf(g)).length - 1;
+        const spacing = 18; // Tighter spacing between goats
+        const angle = Math.atan2(player.y - g.y, player.x - g.x);
+        const distance = followingIdx * spacing;
+        target = {
+          x: player.x - Math.cos(angle) * distance,
+          y: player.y - Math.sin(angle) * distance
+        };
+      }
+      const ddx=target.x-g.x, ddy=target.y-g.y;
+      const dist=Math.sqrt(ddx*ddx+ddy*ddy);
+      if (dist>TILE*0.8) { g.x+=ddx/dist*1.6; g.y+=ddy/dist*1.6; }
+    } else {
+      g.wanderTimer--;
+      if (g.wanderTimer<=0) { g.wanderAngle=Math.random()*Math.PI*2; g.wanderTimer=60+Math.random()*120; }
+      const wx=Math.cos(g.wanderAngle)*0.3, wy=Math.sin(g.wanderAngle)*0.3;
+      const ntx=Math.floor((g.x+wx)/TILE), nty=Math.floor((g.y+wy)/TILE);
+      if (!isSolid(ntx,nty)) { g.x+=wx; g.y+=wy; }
+      else g.wanderTimer=0;
+    }
+    // Random bleats
+    if (Math.random()<0.002) {
+      const distToPlayer = Math.sqrt((g.x-player.x)**2+(g.y-player.y)**2);
+      if (distToPlayer < TILE*15) playBleat(g.isBaby);
+    }
+  }
+
+  // Decorations
+  for (const d of decorations) {
+    d.timer++;
+    if (d.type==='butterfly') {
+      d.x += Math.sin(d.timer*0.05)*0.5+d.vx;
+      d.y = d.baseY + Math.sin(d.timer*0.03)*15;
+    } else {
+      d.x += d.vx*2;
+      d.y = d.baseY + Math.sin(d.timer*0.08)*5;
+      if (d.x>worldW*TILE) d.x=0;
+      if (d.x<0) d.x=worldW*TILE;
+    }
+  }
+
+  // HUD
+  player.followingGoats = goats.filter(g=>g.following).length;
+  document.getElementById('hud-time').textContent = `🕐 ${formatTime(gameTime)}`;
+  document.getElementById('hud-flowers').textContent = `🌸 Flowers: ${player.flowerCount}`;
+  document.getElementById('hud-goats').textContent = `🐐 Following: ${player.followingGoats}`;
+  document.getElementById('hud-score').textContent = `⭐ Score: ${totalScore}`;
+  document.getElementById('hud-day').textContent = `Day ${dayNum}`;
+
+  if (messageTimer>0) { messageTimer--; if(messageTimer===0) document.getElementById('hud-message').style.opacity=0; }
+}
+
+function endDay(reachedBarn) {
+  gameState = 'gameover';
+  stopAmbient();
+  let pts = 0;
+  let mothersFollowing = 0;
+  let regularGoatsFollowing = 0;
+  
+  if (reachedBarn) {
+    // 1 point per flower in inventory at end of day
+    pts += player.flowerCount;
+    
+    // Count goats currently following (not collected in barn)
+    for (const g of goats) {
+      if (g.following && !g.isBaby) {
+        if (g.isMother) {
+          mothersFollowing++;
+          pts += 10;
+        } else {
+          regularGoatsFollowing++;
+          pts += 3;
+        }
+      }
+    }
+    playBarnSound();
+  }
+  
+  const el = document.getElementById('game-over-screen');
+  el.style.display = 'flex';
+  document.getElementById('hud').style.display = 'none';
+  
+  if (reachedBarn) {
+    document.getElementById('go-title').textContent = 'Day Complete! 🌅';
+    const goatsInfo = mothersFollowing > 0 || regularGoatsFollowing > 0 
+      ? `You brought ${mothersFollowing} mother goat(s) and ${regularGoatsFollowing} regular goat(s) home!` 
+      : 'No goats followed you home today.';
+    document.getElementById('go-message').textContent = goatsInfo;
+  } else {
+    document.getElementById('go-title').textContent = 'Sue fell asleep... 💤';
+    document.getElementById('go-message').textContent = "You didn't make it back before sundown.";
+  }
+  
+  totalScore += pts;
+  document.getElementById('go-score').textContent = `Today: +${pts} points`;
+  document.getElementById('go-total').textContent = `Total Score: ${totalScore}`;
+}
+
+function resetScores() {
+  totalScore = 0;
+  todayScore = 0;
+}
+
+// Drawing
+const COLORS = {
+  [T_GRASS]: ['#5a8a32','#4e7a2c','#528230'],
+  [T_TALL_GRASS]: ['#6a9a3a','#5e8a34'],
+  [T_TREE]: '#3a6a1a',
+  [T_WATER]: ['#3a8abf','#4a9acf','#2a7aaf'],
+  [T_FENCE]: '#8b6914',
+  [T_PATH]: ['#c4a46a','#b89860'],
+  [T_DENSE]: '#1a3a0a',
+  [T_HILL]: ['#7a9a52','#6a8a42'],
+  [T_BRIDGE]: '#9a7a3a',
+  [T_HEDGE]: '#2a5a12',
+  [T_BARN]: '#8b2a1a',
+  [T_BARN_DOOR]: '#5a3a1a'
+};
+
+function drawTile(tx,ty,sx,sy) {
+  const t = getTile(tx,ty);
+  const c = COLORS[t];
+  if (Array.isArray(c)) {
+    ctx.fillStyle = c[(tx*7+ty*13)%c.length];
+  } else {
+    ctx.fillStyle = c||'#5a8a32';
+  }
+  ctx.fillRect(sx,sy,TILE+1,TILE+1);
+
+  // Details
+  if (t===T_TREE) {
+    // Trunk - thicker and more detailed
+    ctx.fillStyle='#4a2a1a'; ctx.fillRect(sx+8,sy+11,8,13);
+    ctx.fillStyle='#6a4a2a'; ctx.fillRect(sx+9,sy+11,6,12);
+    ctx.fillStyle='#5a3a1a'; ctx.fillRect(sx+10,sy+12,4,10); // Shadow
+    
+    // Canopy - layered and organic
+    ctx.fillStyle='#0a3a0a'; ctx.fillRect(sx+3,sy+1,18,14);
+    ctx.fillStyle='#1a5a0a'; ctx.fillRect(sx+2,sy+3,20,12);
+    ctx.fillStyle='#2a7a1a'; ctx.fillRect(sx+4,sy+2,16,13);
+    ctx.fillStyle='#3a8a2a'; ctx.fillRect(sx+6,sy+3,12,11);
+    ctx.fillStyle='#4aaa3a'; ctx.fillRect(sx+8,sy+4,8,9);
+    
+    // Canopy highlights - sun dappled
+    ctx.fillStyle='#5aba4a'; ctx.fillRect(sx+7,sy+4,3,3);
+    ctx.fillStyle='#4a9a3a'; ctx.fillRect(sx+13,sy+5,2,2);
+    
+    // Branch shadows
+    ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.fillRect(sx+9,sy+12,4,2);
+  } else if (t===T_FENCE) {
+    // Post
+    ctx.fillStyle='#5a3a1a'; ctx.fillRect(sx+11,sy+6,2,18);
+    // Horizontal rails
+    ctx.fillStyle='#8b6914'; ctx.fillRect(sx+1,sy+8,22,2);
+    ctx.fillRect(sx+1,sy+14,22,2);
+    ctx.fillRect(sx+1,sy+20,22,2);
+    // Rail shadows
+    ctx.fillStyle='#5a4a0a'; ctx.fillRect(sx+1,sy+9,22,1);
+    // Accent posts
+    ctx.fillStyle='#7a5a1a'; ctx.fillRect(sx+6,sy+6,2,18);
+    ctx.fillRect(sx+16,sy+6,2,18);
+  } else if (t===T_HILL) {
+    ctx.fillStyle='#6a8a42'; ctx.fillRect(sx,sy,TILE+1,TILE+1);
+    // Multi-layer hill effect
+    ctx.fillStyle='#7a9a52'; 
+    ctx.fillRect(sx+2,sy+4,20,8);
+    ctx.fillStyle='#8aaa62'; 
+    ctx.fillRect(sx+4,sy+2,16,6);
+    ctx.fillStyle='#9aba72';
+    ctx.fillRect(sx+6,sy+0,12,4);
+    
+    // Hill shading
+    ctx.fillStyle='#5a7a32'; ctx.fillRect(sx+8,sy+16,8,8);
+    
+    // Grass tufts for detail
+    ctx.fillStyle='#5a9a42';
+    ctx.fillRect(sx+3,sy+6,2,2); ctx.fillRect(sx+9,sy+4,2,1); ctx.fillRect(sx+14,sy+6,2,2); ctx.fillRect(sx+19,sy+8,2,1);
+    
+    // Grass shine
+    ctx.fillStyle='rgba(255,255,255,0.15)'; 
+    ctx.fillRect(sx+4,sy+4,3,2); ctx.fillRect(sx+12,sy+2,3,2); ctx.fillRect(sx+18,sy+6,2,1);
+  } else if (t===T_HEDGE) {
+    ctx.fillStyle='#0a3a05'; ctx.fillRect(sx,sy,TILE+1,TILE+1);
+    ctx.fillStyle='#1a5a0a'; ctx.fillRect(sx+2,sy+2,20,20);
+    
+    // Dense leafy hedge with organic texture
+    ctx.fillStyle='#0a4a05';
+    ctx.fillRect(sx+2,sy+4,5,5); ctx.fillRect(sx+9,sy+2,6,6); ctx.fillRect(sx+16,sy+5,5,5);
+    ctx.fillRect(sx+3,sy+12,4,5); ctx.fillRect(sx+10,sy+13,5,4); ctx.fillRect(sx+17,sy+11,4,5);
+    
+    // Hedge leafy highlights
+    ctx.fillStyle='#2a7a1a';
+    ctx.fillRect(sx+4,sy+5,3,3); ctx.fillRect(sx+11,sy+4,3,3); ctx.fillRect(sx+18,sy+7,2,2);
+    
+    // Impenetrable overlay
+    ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.fillRect(sx,sy,TILE+1,TILE+1);
+  } else if (t===T_BARN) {
+    // Simple barn: 3-high x 5-wide red body + 1-high flat roof on top
+    // This tile is one component of the full barn, drawn at normal size
+    
+    // FLAT ROOF - Dark brown, spans 7 squares wide (covers red barn + overhang)
+    ctx.fillStyle='#3a2a1a';
+    ctx.fillRect(sx-8,sy,40,8);
+    
+    // MAIN BARN BODY - Bright red, 3 squares high x 5 squares wide
+    ctx.fillStyle='#c41e3a';
+    ctx.fillRect(sx-2,sy+8,24,24);
+    
+    // BARN DOOR - Dark wood at bottom center
+    ctx.fillStyle='#4a2a1a';
+    ctx.fillRect(sx+6,sy+28,8,8);
+    
+    // Door center seam for detail
+    ctx.fillStyle='#2a1a0a';
+    ctx.fillRect(sx+9.5,sy+28,1,8);
+  } else if (t===T_BARN_DOOR) {
+    ctx.fillStyle='#5a8a32'; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#2a1a0a'; ctx.fillRect(sx+6,sy+2,12,20);
+    ctx.fillStyle='#4a3a1a'; ctx.fillRect(sx+8,sy+4,8,16);
+    // Door planks with grain
+    ctx.fillStyle='#3a2a0a';
+    ctx.fillRect(sx+7,sy+6,10,1); ctx.fillRect(sx+7,sy+11,10,1); ctx.fillRect(sx+7,sy+16,10,1);
+    // Plank shadows
+    ctx.fillStyle='#1a0a00'; ctx.fillRect(sx+7,sy+6.5,10,0.5);
+    // Handle with shadow
+    ctx.fillStyle='#6a5a2a'; ctx.fillRect(sx+15,sy+10,1,4);
+    ctx.fillStyle='#8a7a4a'; ctx.fillRect(sx+14,sy+10,2,4);
+  } else if (t===T_WATER) {
+    const shimmer = Math.sin((tx+ty)*0.5+performance.now()*0.003)*8;
+    ctx.fillStyle=`rgb(${50+shimmer},${130+shimmer},${180+shimmer})`;
+    ctx.fillRect(sx,sy,TILE+1,TILE+1);
+    
+    // Water depth layers
+    ctx.fillStyle='rgba(30,100,160,0.3)';
+    ctx.fillRect(sx,sy+12,TILE+1,TILE-11);
+    
+    // Water ripples - animated
+    ctx.strokeStyle='rgba(255,255,255,0.35)';
+    ctx.lineWidth=1.5;
+    const wavePhase = performance.now()*0.002;
+    ctx.beginPath(); ctx.arc(sx+6,sy+8,3+Math.sin(wavePhase)*2,0,Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(sx+16,sy+12,2+Math.sin(wavePhase+2)*1.5,0,Math.PI*2); ctx.stroke();
+    
+    // Water shine
+    ctx.fillStyle='rgba(255,255,255,0.15)';
+    ctx.fillRect(sx+2,sy+2,6,3); ctx.fillRect(sx+14,sy+4,4,2);
+  } else if (t===T_BRIDGE) {
+    ctx.fillStyle='#3a8abf'; ctx.fillRect(sx,sy,TILE+1,TILE+1);
+    // Bridge planks with wood texture
+    ctx.fillStyle='#a08050'; ctx.fillRect(sx+2,sy+4,20,6);
+    ctx.fillRect(sx+2,sy+14,20,6);
+    // Plank detail lines and shadows
+    ctx.fillStyle='#8a6830';
+    for(let i=0;i<4;i++) { 
+      ctx.fillRect(sx+3+i*5,sy+4,1,6); 
+      ctx.fillRect(sx+3+i*5,sy+14,1,6); 
+    }
+    // Wood grain highlights
+    ctx.fillStyle='rgba(255,255,255,0.2)';
+    for(let i=0;i<4;i++) { 
+      ctx.fillRect(sx+4+i*5,sy+5,1,4); 
+      ctx.fillRect(sx+4+i*5,sy+15,1,4); 
+    }
+    // Support beams - thicker
+    ctx.fillStyle='#5a3a1a'; ctx.fillRect(sx+2,sy+1,4,22); ctx.fillRect(sx+18,sy+1,4,22);
+    ctx.fillStyle='#7a5a2a'; ctx.fillRect(sx+3,sy+2,2,20); ctx.fillRect(sx+19,sy+2,2,20);
+  } else if (t===T_DENSE) {
+    ctx.fillStyle='#030a02'; ctx.fillRect(sx,sy,TILE+1,TILE+1);
+    ctx.fillStyle='#050f04'; ctx.fillRect(sx+2,sy+2,20,20);
+    
+    // Impenetrable forest - very dense
+    ctx.fillStyle='#0a2a05';
+    ctx.fillRect(sx+1,sy+3,22,18);
+    
+    // Forest leaf clusters - scattered
+    ctx.fillStyle='#1a4a0a'; 
+    ctx.fillRect(sx+2,sy+2,6,5); ctx.fillRect(sx+12,sy+1,6,6); ctx.fillRect(sx+16,sy+8,5,5);
+    ctx.fillRect(sx+1,sy+12,5,5); ctx.fillRect(sx+10,sy+14,6,4); ctx.fillRect(sx+18,sy+13,4,6);
+    
+    // Very dark shading to indicate impassable
+    ctx.fillStyle='rgba(0,0,0,0.35)'; 
+    ctx.fillRect(sx,sy,TILE+1,TILE+1);
+    
+    // Dense forest detail
+    ctx.fillStyle='rgba(0,0,0,0.2)';
+    ctx.fillRect(sx+3,sy+4,4,4); ctx.fillRect(sx+13,sy+5,4,4); ctx.fillRect(sx+7,sy+9,4,4);
+  } else if (t===T_PATH) {
+    ctx.fillStyle=(tx*7+ty*13)%2===0?'#c4a46a':'#b89860';
+    ctx.fillRect(sx,sy,TILE+1,TILE+1);
+    
+    // Path stones/dirt with texture
+    ctx.fillStyle='rgba(0,0,0,0.08)';
+    ctx.fillRect(sx+1,sy+1,4,5); ctx.fillRect(sx+10,sy+6,6,5); ctx.fillRect(sx+17,sy+2,5,4);
+    ctx.fillRect(sx+2,sy+14,5,4); ctx.fillRect(sx+10,sy+12,6,5);
+    
+    // Light stones
+    ctx.fillStyle='rgba(255,255,255,0.1)';
+    ctx.fillRect(sx+6,sy+8,5,3); ctx.fillRect(sx+14,sy+13,5,4);
+    
+    // Path wear marks
+    ctx.fillStyle='rgba(0,0,0,0.04)'; 
+    ctx.fillRect(sx+2,sy+10,20,1);
+    ctx.fillRect(sx+8,sy,1,24);
+  } else if (t===T_TALL_GRASS) {
+    ctx.fillStyle='#5a9a32'; ctx.fillRect(sx,sy,TILE+1,TILE+1);
+    const wave = Math.sin(tx*0.5+performance.now()*0.0015)*2.5;
+    
+    // Grass with wind animation
+    ctx.fillStyle='#6aaa42';
+    ctx.fillRect(sx+3+wave,sy+5,2,13);
+    ctx.fillRect(sx+9+wave,sy+3,2,15);
+    ctx.fillRect(sx+15+wave,sy+7,2,11);
+    
+    // Lighter grass for depth
+    ctx.fillStyle='#7aba52';
+    ctx.fillRect(sx+6+wave,sy+7,2,11);
+    ctx.fillRect(sx+12+wave,sy+6,2,12);
+    
+    // Grass highlights
+    ctx.fillStyle='rgba(255,255,255,0.2)';
+    ctx.fillRect(sx+4+wave,sy+6,1,8);
+    ctx.fillRect(sx+10+wave,sy+5,1,10);
+  }
+}
+
+function drawFlower(f,sx,sy) {
+  if (f.collected) return;
+  const cx=sx+TILE/2, cy=sy+TILE/2;
+  // Stem
+  ctx.fillStyle='#2a5a1a'; 
+  ctx.fillRect(cx-1.5,cy-2,3,12);
+  ctx.fillRect(cx-0.5,cy+8,1,2);
+  // Leaves
+  ctx.fillStyle='#3a7a2a'; 
+  ctx.fillRect(cx-6,cy+2,4,2);
+  ctx.fillRect(cx+2,cy+3,4,2);
+  if (f.type==='rose') {
+    ctx.fillStyle='#e03030';
+    ctx.fillRect(cx-7,cy-8,14,14);
+    ctx.fillStyle='#ff5050';
+    ctx.fillRect(cx-6,cy-6,12,12);
+    ctx.fillStyle='#ff7070';
+    ctx.fillRect(cx-4,cy-4,8,8);
+  } else if (f.type==='sunflower') {
+    ctx.fillStyle='#f0c010';
+    ctx.fillRect(cx-8,cy-8,16,16);
+    ctx.fillStyle='#8a5a00';
+    ctx.fillRect(cx-3,cy-3,6,6);
+    ctx.fillStyle='#a07a00';
+    ctx.fillRect(cx-2,cy-2,4,4);
+  } else {
+    ctx.fillStyle='#f0a010';
+    ctx.fillRect(cx-7,cy-7,14,14);
+    ctx.fillStyle='#e08000';
+    ctx.fillRect(cx-5,cy-5,10,10);
+    ctx.fillStyle='#f0b030';
+    ctx.fillRect(cx-3,cy-3,6,6);
+  }
+}
+
+function drawGoat(g,sx,sy) {
+  if (g.barnCollected) return;
+  const s = g.isBaby ? 0.7 : 1;
+  ctx.save(); ctx.translate(sx,sy);
+  // Body - larger
+  ctx.fillStyle=g.isBaby?'#e8dcc8':'#ddd0b8';
+  ctx.fillRect(-14*s,-7*s,28*s,16*s);
+  // Head - rounded shape
+  ctx.fillStyle='#d0c4a8';
+  ctx.fillRect(-18*s,-12*s,10*s,14*s);
+  ctx.fillRect(-15*s,-14*s,9*s,4*s);
+  // Eyes
+  ctx.fillStyle='#222';
+  ctx.fillRect(-16*s,-10*s,2.5*s,3*s);
+  ctx.fillRect(-9*s,-10*s,2.5*s,3*s);
+  ctx.fillStyle='#fff';
+  ctx.fillRect(-15.5*s,-9.5*s,1*s,1*s);
+  ctx.fillRect(-8.5*s,-9.5*s,1*s,1*s);
+  // Horns
+  if (!g.isBaby) {
+    ctx.fillStyle='#a09070';
+    ctx.fillRect(-15*s,-16*s,2.5,6);
+    ctx.fillRect(-8*s,-16*s,2.5,6);
+    ctx.fillStyle='#8a7a60';
+    ctx.fillRect(-14.5*s,-15*s,1.5,4);
+    ctx.fillRect(-7.5*s,-15*s,1.5,4);
+  }
+  // Snout
+  ctx.fillStyle='#c0b898';
+  ctx.fillRect(-16*s,-9*s,4*s,3*s);
+  ctx.fillStyle='#888';
+  ctx.fillRect(-15*s,-8.5*s,1.5*s,1.5*s);
+  // Ears
+  ctx.fillStyle='#c0b898';
+  ctx.fillRect(-18*s,-13*s,3*s,4*s);
+  ctx.fillRect(-9*s,-13*s,3*s,4*s);
+  ctx.fillStyle='#9a8a78';
+  ctx.fillRect(-17.5*s,-12.5*s,2*s,3*s);
+  ctx.fillRect(-8.5*s,-12.5*s,2*s,3*s);
+  // Front legs - thicker
+  ctx.fillStyle='#b0a490';
+  ctx.fillRect(-10*s,8*s,4*s,8*s);
+  ctx.fillRect(6*s,8*s,4*s,8*s);
+  // Back legs
+  ctx.fillStyle='#a09480';
+  ctx.fillRect(-14*s,8*s,3*s,8*s);
+  ctx.fillRect(11*s,8*s,3*s,8*s);
+  // Hooves
+  ctx.fillStyle='#6a5a4a';
+  ctx.fillRect(-10*s,16*s,4*s,1.5*s);
+  ctx.fillRect(6*s,16*s,4*s,1.5*s);
+  // Following indicator - heart
+  if (g.following) {
+    ctx.fillStyle='#ff3366';
+    ctx.fillRect(-3,-18*s,6,5);
+    ctx.fillRect(-5,-15*s,2,3);
+    ctx.fillRect(3,-15*s,2,3);
+  }
+  ctx.restore();
+}
+
+function drawPlayer(sx,sy) {
+  ctx.save(); ctx.translate(sx,sy);
+  const bob = Math.sin(player.frame*1.5)*3;
+  
+  // BODY: Overalls (denim blue)
+  ctx.fillStyle='#3a5a9f'; // Denim blue
+  ctx.fillRect(-10,8+bob,20,18);
+  // Overalls straps
+  ctx.fillStyle='#2a4a7f'; // Darker denim
+  ctx.fillRect(-9,8+bob,2,12);
+  ctx.fillRect(7,8+bob,2,12);
+  // Bib detail
+  ctx.fillStyle='#4a6aaf';
+  ctx.fillRect(-7,8+bob,14,4);
+  // Overalls buttons
+  ctx.fillStyle='#e8c040';
+  ctx.fillRect(-6,10+bob,1.5,1.5);
+  ctx.fillRect(4.5,10+bob,1.5,1.5);
+  
+  // LEGS: Denim pants
+  ctx.fillStyle='#3a5a9f';
+  const legOff = player.frame%2===0?1:-1;
+  ctx.fillRect(-8,26+bob+legOff,4.5,8);
+  ctx.fillRect(3.5,26+bob-legOff,4.5,8);
+  
+  // BOOTS: Brown leather
+  ctx.fillStyle='#6a4a2a';
+  ctx.fillRect(-8,34+bob+legOff,4.5,3);
+  ctx.fillRect(3.5,34+bob-legOff,4.5,3);
+  
+  // ARMS: Light skin tone
+  ctx.fillStyle='#f5c8a0';
+  ctx.fillRect(-11,10+bob,2.5,14);
+  ctx.fillRect(8.5,10+bob,2.5,14);
+  // Hands
+  ctx.fillStyle='#f0b8a0';
+  ctx.fillRect(-11,24+bob,2.5,2.5);
+  ctx.fillRect(8.5,24+bob,2.5,2.5);
+  
+  // NECK: Skin connecting head to body
+  ctx.fillStyle='#f5c8a0';
+  ctx.fillRect(-3,4+bob,6,4);
+  
+  // HEAD: Round friendly face
+  ctx.fillStyle='#f5c8a0'; // Peachy skin
+  // Face shape - rounded
+  ctx.fillRect(-7,0+bob,14,8);
+  ctx.fillRect(-8,-2+bob,16,4);
+  ctx.fillRect(-7,-4+bob,14,4);
+  
+  // HAIR: Golden blonde, cheerful and bouncy
+  ctx.fillStyle='#d4a834'; // Golden blonde
+  // Top of head
+  ctx.fillRect(-8,-5+bob,16,4);
+  // Crown/volume
+  ctx.fillRect(-9,-4+bob,18,2);
+  
+  // Left side hair
+  ctx.fillRect(-10,-2+bob,3,8);
+  ctx.fillStyle='#c89820'; // Darker blonde for shading
+  ctx.fillRect(-10,-2+bob,1.5,8);
+  
+  // Right side hair
+  ctx.fillStyle='#d4a834';
+  ctx.fillRect(7,-2+bob,3,8);
+  ctx.fillStyle='#c89820';
+  ctx.fillRect(8.5,-2+bob,1.5,8);
+  
+  // Back hair - flowing down to shoulders
+  ctx.fillStyle='#d4a834';
+  ctx.fillRect(-7,6+bob,14,8);
+  ctx.fillStyle='#b89410'; // Darker for back depth
+  ctx.fillRect(-6,8+bob,12,6);
+  
+  // Hair bangs/front framing
+  ctx.fillStyle='#d4a834';
+  ctx.fillRect(-7,-3+bob,3,6);
+  ctx.fillRect(4,-3+bob,3,6);
+  
+  // EYES: Bright blue, happy
+  ctx.fillStyle='#4a9aff'; // Bright blue
+  ctx.fillRect(-5,-1+bob,3,3.5);
+  ctx.fillRect(2,-1+bob,3,3.5);
+  // Eye whites
+  ctx.fillStyle='#ffffff';
+  ctx.fillRect(-4.5,-0.5+bob,2.2,2);
+  ctx.fillRect(2.5,-0.5+bob,2.2,2);
+  // Pupils - looking happy
+  ctx.fillStyle='#1a1a1a';
+  ctx.fillRect(-4,-0.2+bob,1.5,1.5);
+  ctx.fillRect(2.8,-0.2+bob,1.5,1.5);
+  // Pupil shine - life and sparkle
+  ctx.fillStyle='#ffffff';
+  ctx.fillRect(-3.5,0.2+bob,0.8,0.8);
+  ctx.fillRect(3.3,0.2+bob,0.8,0.8);
+  
+  // EYEBROWS: Blonde, friendly arch
+  ctx.fillStyle='#b89410';
+  ctx.fillRect(-5,-2.5+bob,3.5,0.7);
+  ctx.fillRect(1.5,-2.5+bob,3.5,0.7);
+  
+  // NOSE: Small and simple
+  ctx.fillStyle='#e8b8a0'; // Slightly darker skin
+  ctx.fillRect(-0.5,0+bob,1,1.5);
+  
+  // CHEEKS: Rosy and cheerful
+  ctx.fillStyle='#ffb0c8'; // Pink blush
+  ctx.fillRect(-7,1.5+bob,2,2.5);
+  ctx.fillRect(5,1.5+bob,2,2.5);
+  
+  // MOUTH: Happy smile
+  ctx.fillStyle='#ff8a9b'; // Pink smile
+  // Mouth line
+  ctx.fillRect(-2,4+bob,4,0.8);
+  // Smile curve
+  ctx.fillStyle='#ffb0c0';
+  ctx.fillRect(-1.5,4.8+bob,3,0.5);
+  
+  // BASKET: Held at side and down, wicker weave
+  ctx.fillStyle='#a08840'; // Tan wicker
+  // Basket body
+  ctx.fillRect(12,12+bob,9,11);
+  // Top of basket
+  ctx.fillStyle='#b09850';
+  ctx.fillRect(12,12+bob,9,1.5);
+  // Basket weave detail
+  ctx.fillStyle='#9a7830';
+  for(let i=0;i<4;i++) ctx.fillRect(12.5,13+i*2.2+bob,8,0.6);
+  // Vertical weave lines
+  for(let i=0;i<3;i++) ctx.fillRect(13.5+i*3,12+bob,0.6,11);
+  // Basket rim/edge
+  ctx.fillStyle='#8a6820';
+  ctx.fillRect(12,23+bob,9,0.8);
+  // Basket handle - arched
+  ctx.fillStyle='#9a7830';
+  ctx.beginPath();
+  ctx.arc(16.5,10+bob,4,Math.PI,0,false);
+  ctx.fill();
+  ctx.fillStyle='#8a6820';
+  ctx.beginPath();
+  ctx.arc(16.5,11+bob,3,Math.PI,0,false);
+  ctx.fill();
+  
+  ctx.restore();
+}
+
+function render() {
+  if (gameState === 'title') { requestAnimationFrame(render); return; }
+  if (gameState === 'gameover') { requestAnimationFrame(render); return; }
+
+  camera.x = player.x - W/2;
+  camera.y = player.y - H/2;
+
+  const skyColor = getSkyColor(gameTime);
+  ctx.fillStyle = skyColor;
+  ctx.fillRect(0,0,W,H);
+
+  const startTX = Math.floor(camera.x/TILE);
+  const startTY = Math.floor(camera.y/TILE);
+  const offX = -(camera.x%TILE);
+  const offY = -(camera.y%TILE);
+
+  // Tiles
+  for (let r=-1;r<ROWS;r++) {
+    for (let c=-1;c<COLS;c++) {
+      const tx=startTX+c, ty=startTY+r;
+      drawTile(tx,ty,offX+c*TILE,offY+r*TILE);
+    }
+  }
+
+  // Flowers
+  for (const f of flowers) {
+    const sx=f.x*TILE-camera.x, sy=f.y*TILE-camera.y;
+    if (sx>-TILE&&sx<W+TILE&&sy>-TILE&&sy<H+TILE) drawFlower(f,sx,sy);
+  }
+
+  // Goats
+  for (const g of goats) {
+    const sx=g.x-camera.x, sy=g.y-camera.y;
+    if (sx>-30&&sx<W+30&&sy>-30&&sy<H+30) drawGoat(g,sx,sy);
+  }
+
+  // Player
+  drawPlayer(player.x-camera.x, player.y-camera.y);
+
+  // Decorations
+  for (const d of decorations) {
+    const sx=d.x-camera.x, sy=d.y-camera.y;
+    if (sx<-20||sx>W+20||sy<-20||sy>H+20) continue;
+    if (d.type==='butterfly') {
+      const wingPhase = Math.sin(d.timer*0.2);
+      ctx.fillStyle=['#e06080','#60a0e0','#e0c040','#a060e0'][(Math.floor(d.x)+Math.floor(d.y))%4];
+      ctx.fillRect(sx-3*wingPhase,sy-1,3,3);
+      ctx.fillRect(sx+1,sy-1,3*wingPhase,3);
+      ctx.fillStyle='#333';
+      ctx.fillRect(sx,sy,1,2);
+    } else {
+      ctx.fillStyle='#333';
+      const wingUp = Math.sin(d.timer*0.15)*3;
+      ctx.fillRect(sx-1,sy,3,2);
+      ctx.fillRect(sx-4,sy-wingUp,3,1);
+      ctx.fillRect(sx+3,sy-wingUp,3,1);
+    }
+  }
+
+
+
+  // Darkening overlay
+  const dark = getDarken(gameTime);
+  if (dark>0) {
+    ctx.fillStyle=`rgba(10,5,30,${dark})`;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  // Interaction hints
+  for (const f of flowers) {
+    if (!f.collected && Math.abs(player.x-f.x*TILE-TILE/2)<TILE*1.5 && Math.abs(player.y-f.y*TILE-TILE/2)<TILE*1.5) {
+      ctx.fillStyle='rgba(255,255,200,0.8)';
+      ctx.font='10px monospace';
+      ctx.fillText('[E] Pick',f.x*TILE-camera.x-8,f.y*TILE-camera.y-8);
+    }
+  }
+  for (const g of goats) {
+    if (!g.following && !g.isBaby && Math.abs(player.x-g.x)<TILE*2 && Math.abs(player.y-g.y)<TILE*2) {
+      ctx.fillStyle='rgba(255,255,200,0.8)';
+      ctx.font='10px monospace';
+      ctx.fillText(player.flowerCount>0?'[E] Feed':'Need 🌸',g.x-camera.x-14,g.y-camera.y-16);
+    }
+  }
+
+  requestAnimationFrame(render);
+}
+
+function gameLoop() {
+  update();
+  setTimeout(gameLoop, 1000/60);
+}
+
+gameLoop();
+render();
+
+// Element SDK
+const defaultConfig = {
+  game_title: "Sue's Goat Farm",
+  background_color: '#87CEEB',
+  surface_color: '#1e140a',
+  text_color: '#f5deb3',
+  primary_action_color: '#8b6914',
+  secondary_action_color: '#5a3a1a'
+};
+
+function applyConfig(config) {
+  const t = config.game_title || defaultConfig.game_title;
+  document.getElementById('main-title').textContent = t;
+  document.title = t;
+
+  document.querySelectorAll('.hud-box').forEach(el => {
+    el.style.background = (config.surface_color||defaultConfig.surface_color)+'d9';
+    el.style.borderColor = config.primary_action_color||defaultConfig.primary_action_color;
+    el.style.color = config.text_color||defaultConfig.text_color;
+  });
+  document.querySelectorAll('.start-btn').forEach(el => {
+    el.style.background = config.primary_action_color||defaultConfig.primary_action_color;
+    el.style.borderColor = config.secondary_action_color||defaultConfig.secondary_action_color;
+  });
+}
+
+window.elementSdk.init({
+  defaultConfig,
+  onConfigChange: async (config) => applyConfig(config),
+  mapToCapabilities: (config) => ({
+    recolorables: [
+      {get:()=>config.background_color||defaultConfig.background_color, set:v=>{config.background_color=v;window.elementSdk.setConfig({background_color:v})}},
+      {get:()=>config.surface_color||defaultConfig.surface_color, set:v=>{config.surface_color=v;window.elementSdk.setConfig({surface_color:v})}},
+      {get:()=>config.text_color||defaultConfig.text_color, set:v=>{config.text_color=v;window.elementSdk.setConfig({text_color:v})}},
+      {get:()=>config.primary_action_color||defaultConfig.primary_action_color, set:v=>{config.primary_action_color=v;window.elementSdk.setConfig({primary_action_color:v})}},
+      {get:()=>config.secondary_action_color||defaultConfig.secondary_action_color, set:v=>{config.secondary_action_color=v;window.elementSdk.setConfig({secondary_action_color:v})}}
+    ],
+    borderables: [],
+    fontEditable: undefined,
+    fontSizeable: undefined
+  }),
+  mapToEditPanelValues: (config) => new Map([
+    ['game_title', config.game_title || defaultConfig.game_title]
+  ])
+});
+</script>
+ <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9e6a7488676ad7ec',t:'MTc3NTI0NDI4NC4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
